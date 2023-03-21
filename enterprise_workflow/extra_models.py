@@ -81,8 +81,8 @@ def model_3a_turnover(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm
     wn = blocks.white_noise_block(vary=False, select='backend')
     rn = blocks.red_noise_block(prior='log-uniform', Tspan=Tspan, components=30)
 
-    log10_A_gw = parameter.Uniform(-18, -12)('log10_A_gw')
-    gamma_gw = parameter.Constant(4.33)('gamma_gw')
+    log10_A_gw = parameter.Uniform(-18, -12)('gw_log10_A')
+    gamma_gw = parameter.Constant(4.33)('gw_gamma')
 
     # cpl = enterprise.signals.utils.powerlaw(log10_A=log10_A_gw, gamma=gamma_gw)
     kappa_name = '{}_kappa'.format('gw')
@@ -137,11 +137,11 @@ def model3a_sinusoid(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_
     pta.set_default_params(noisedict)
     return pta
 
-def model3d(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=True, simulate=False):
+def model_3d(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=False, simulate=False):
     Tspan = model_utils.get_tspan(psrs)
     if simulate:
         tm = simulate_package.TimingModel()
-    if tm_marg:
+    elif tm_marg:
         tm = gp_signals.MarginalizingTimingModel()
     else:
         tm = gp_signals.TimingModel()
@@ -153,24 +153,19 @@ def model3d(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=True
                                         orf='hd', Tspan=Tspan,
                                         components=n_gwbfreqs,
                                         name='gw', gamma_val=gamma_common)
-    dataset_tmin = min([min(psr.toas) for psr in psrs])
+    crn_mono = blocks.common_red_noise_block(psd='powerlaw', prior='log-uniform',
+                                        orf='monopole', Tspan=Tspan,
+                                        components=n_gwbfreqs,
+                                        name='mono', gamma_val=gamma_common)
         # include sinusoid
-    @function
-    def sine_wave(toas, flags, A=-9, f=-9, phase=0.0):
-        return 10 ** A * np.sin(2 * np.pi * (10 ** f) * (toas - dataset_tmin) + phase)
-    def sine_signal(A, f, phase, name=""):
-        return Deterministic(sine_wave(A=A, f=f, phase=phase), name=name)
-    m1 = sine_signal(A=parameter.Uniform(-9, -4)('common_sin_A'),
-                     f=parameter.Uniform(-9, -7)('common_sin_f'),
-                     phase=parameter.Uniform(0, 2 * np.pi)('common_sin_phase'))
     # for simulation
-    si = tm + wn + rn + crn + m1
+    si = tm + wn + rn + crn
     pta = signal_base.PTA([si(psr) for psr in psrs])
 
     pta.set_default_params(noisedict)
     return pta
 
-def model_2a_or_3a_no_combine(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=True, type='model_2a'):
+def model_2a_or_3a_no_combine(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=True, type='model_2a', simulate=False):
 
     # 15-yr dataset
     Tspan = model_utils.get_tspan(psrs)
@@ -187,8 +182,10 @@ def model_2a_or_3a_no_combine(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=
             equad = re.sub('log10_equad', 'log10_t2equad', par)
 
             noisedict[equad] = np.log10(10 ** noisedict[par] / noisedict[efac])
-
-    tm = gp_signals.TimingModel(use_svd=True)
+    if simulate:
+        tm = simulate_package.TimingModel()
+    else:
+        tm = gp_signals.TimingModel(use_svd=True)
     wn = ee_models.white_noise_block(vary=False, inc_ecorr=True, tnequad=False, select='backend')
     rn = ee_models.red_noise_block(prior='log-uniform', Tspan=Tspan, components=30, combine=False)
     crn = ee_models.common_red_noise_block(psd='powerlaw', prior='log-uniform', Tspan=Tspan,
@@ -254,7 +251,8 @@ model_registry = ModelRegistry([ModelClass(ee_models.model_2a, 'model_2a', 'Ente
                                            'Model2a, does not combine RN GP coefficients'),
                                 ModelClass(model_3a_nocombine, 'model_3a_nocombine',
                                            'Model3a, does not combine RN GP coefficients'),
-                                ModelClass(model_3a_turnover, 'turnover', 'M3a turnover')])
+                                ModelClass(model_3a_turnover, 'turnover', 'M3a turnover'),
+                                ModelClass(model_3d, 'model_3d', 'HD plus monopole')])
 
 
 

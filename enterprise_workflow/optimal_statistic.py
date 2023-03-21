@@ -3,6 +3,7 @@ import scipy.sparse as sps
 import numpy as np
 import scipy.linalg
 from enterprise.signals import utils
+import math
 
 def latex_float(f):
     float_str = "{0:.2g}".format(f)
@@ -53,8 +54,10 @@ class OS:
         self.psrs, self.params = psrs, params
         self.pairs  = [(i,j) for i in range(len(pta)) for j in range(i+1, len(pta))]
         self.angles = np.array([np.arccos(np.dot(self.psrs[i].pos, self.psrs[j].pos)) for (i,j) in self.pairs])
-
+        if residuals is not None:
+            print(residuals[0])
         ys = [sm._residuals for sm in pta] if residuals is None else residuals
+        print(ys[0])
         self.Cs = [Cmat(sm, params) for sm in pta]
 
         self.Fgws  = [sm['gw'].get_basis(params) for sm in pta]
@@ -65,6 +68,7 @@ class OS:
         Nfreqs = int(self.Gamma.size / 2)
 
         FCys = [C.solve(y, Fgw) for C, y, Fgw in zip(self.Cs, ys, self.Fgws)]
+
         self.FCFs = [C.solve(Fgw, Fgw) for C, Fgw in zip(self.Cs, self.Fgws)]
 
         # a . np.diag(g) . b = a . (g * b) = (a * g) . b
@@ -114,6 +118,24 @@ class OS:
 
             self.rhos_freqs[ii] = np.array(ts_tmp) / np.array(bs_tmp)
             self.sigmas_freqs[ii] = 1.0 / np.sqrt(bs_tmp)
+
+    def mcos(self, orfs=[utils.monopole_orf, utils.dipole_orf, utils.hd_orf]):
+        design = np.array([[orfs[kk](self.psrs[i].pos, self.psrs[j].pos) for (i,j) in self.pairs]
+                           for kk in range(len(orfs))]).T # Npairs x 3 matrix
+        errors = np.diag(self.sigmas**2)
+        sigma_inv_matrix = np.linalg.inv(design.T @ np.linalg.inv(errors) @ design)
+        ahat = sigma_inv_matrix @ design.T @ np.linalg.inv(errors) @ self.rhos
+
+        # design = np.array([[orfs[kk](self.psrs[i].pos, self.psrs[j].pos) for (i, j) in self.pairs]
+        #                    for kk in range(len(orfs))]).T  # Npairs x 3 matrix
+        # x, res, _, _ = np.linalg.lstsq(design / self.sigmas[:, np.newaxis],
+        #                                self.rhos / self.sigmas, rcond=None)
+        #
+        # errmat = np.linalg.inv(
+        #     (design / self.sigmas[:, np.newaxis]).T @ (design / self.sigmas[:, np.newaxis]))
+        return ahat, np.sqrt(np.diag(sigma_inv_matrix))
+
+
 
     def _set_orf(self, orf):
         if not hasattr(self, '_orf') or self._orf is not orf:
@@ -208,3 +230,54 @@ class OS:
     def snr(self, orf=utils.hd_orf, sel=(lambda p: slice(None))):
         return self.os(orf, sel) / self.os_sigma(orf, sel)
 
+
+def make_complex(vec):
+    return vec[::2] + 1j * vec[1::2]
+
+class OSShifts(OS):
+    def __init__(self, psrs, pta, params):
+        self.psrs, self.params = psrs, params
+        self.pairs = [(i, j) for i in range(len(pta)) for j in range(i + 1, len(pta))]
+        self.angles = np.array([np.arccos(np.dot(self.psrs[i].pos, self.psrs[j].pos)) for (i, j) in self.pairs])
+
+        ys = [sm._residuals for sm in pta]
+        Cs = [Cmat(sm, params) for sm in pta]
+
+        Fgws = [sm['gw'].get_basis(params) for sm in pta]
+        self.Gamma = pta[0]['gw'].get_phi({**params, 'gw_log10_A': 0});
+        assert self.Gamma.ndim == 1
+
+        FCys = [make_complex(C.solve(y, Fgw)) for C, y, Fgw in zip(Cs, ys, Fgws)]
+        self.FCFs = [C.solve(Fgw, Fgw) for C, Fgw in zip(Cs, Fgws)]
+
+        ts = [np.conj(FCys[i]) * (self.Gamma[::2] * FCys[j]) for (i, j) in self.pairs]
+        bs = [np.trace(np.dot(self.FCFs[i] * self.Gamma, self.FCFs[j] * self.Gamma)) for (i, j) in self.pairs]
+
+        self._rhos = np.array(ts) / np.array(bs)[:, np.newaxis]
+        self.sigmas = 1.0 / np.sqrt(bs)
+
+        self.set_shifts(None)
+
+    def set_shifts(self, seed):
+        ngw = self._rhos[0].shape[0]
+
+        if seed is None:
+            self.shifts = [np.ones(ngw) for i in range(len(self.psrs))]
+        else:
+            np.random.seed(seed)
+            self.shifts = [np.exp(2 * math.pi * 1j * np.random.uniform(size=ngw)) for i in range(len(self.psrs))]
+
+        self.allshifts = np.array([np.conj(self.shifts[i]) * self.shifts[j] for i, j in self.pairs])
+
+    def set_freqs(self, k):
+        ngw = self._rhos[0].shape[0]
+        self.shifts = []
+        for i in range(len(self.psrs)):
+            self.shifts.append(np.zeros(ngw))
+            self.shifts[-1][k] = 1
+
+        self.allshifts = np.array([np.conj(self.shifts[i]) * self.shifts[j] for i, j in self.pairs])
+
+    @property
+    def rhos(self):
+        return np.real(np.sum(self._rhos * self.allshifts, axis=1))

@@ -173,10 +173,10 @@ class OptStatParams(ParamsBase):
         chain = np.hstack((chain_df.to_numpy(), np.zeros((len(chain_df), 4))))
         param_names = chain_df.columns
         results = {}
+        os = OptimalStatistic(psrs, pta=pta, bayesephem=False)
         if self.scos:
             results['scos'] = {}
             logger.info("HD SCOS")
-            os = OptimalStatistic(psrs, pta=pta, bayesephem=False)
             xi, rho, sig, OS_HD, OS_sig_HD = os.compute_noise_marginalized_os(chain, param_names, N=self.num_samples)
 
             os = OptimalStatistic(psrs, pta=pta, bayesephem=False, orf='monopole')
@@ -185,18 +185,17 @@ class OptStatParams(ParamsBase):
             os = OptimalStatistic(psrs, pta=pta, bayesephem=False, orf='dipole')
             xi, rho, sig, OS_DIPOLE, OS_sig_DIPOLE = os.compute_noise_marginalized_os(chain, param_names, N=self.num_samples)
 
-            results['scos']['rho'] = rho
-            results['scos']['xi'] = xi
-            results['scos']['sigmas'] = sig
             results['scos']['os_hd'] = OS_HD
             results['scos']['os_hd_sigma'] = OS_HD / OS_sig_HD
             results['scos']['os_mono'] = OS_MONO
             results['scos']['os_mono_sigma'] = OS_MONO / OS_sig_MONO
             results['scos']['os_dipole'] = OS_DIPOLE
             results['scos']['os_dipole_sigma'] = OS_DIPOLE / OS_sig_DIPOLE
+
         if self.mcos:
             results['mcos'] = {}
-            xi, rho, sig, OS, OS_SIG = os.compute_noise_marginalized_multiple_corr_os(chain, param_names=param_names, N=self.num_samples)
+            xi, rho, sig, OS, OS_SIG = os.compute_noise_marginalized_multiple_corr_os(chain, param_names=param_names,
+                                                                                      N=self.num_samples)
             results['mcos']['os_mono'] = OS[:, 0]
             results['mcos']['os_mono_sigma'] = OS_SIG[:, 0]
 
@@ -215,7 +214,6 @@ class OptStatParams(ParamsBase):
                     results[key][key2] = results[key][key2].tolist()
 
         json.dump(results, open(str(outdir.joinpath("os_results.json")), 'w'))
-
 
 
 class BaseRunParams(ParamsBase):
@@ -423,6 +421,8 @@ class InjectionParams(ParamsBase):
     valid_params = {
         "log10_A_gw": (float, -14),
         "gw_components": (int, 14),
+        "log10_A_mono": (float, -20),
+        "gamma_mono": (float, 13 / 3),
         "gamma_gw": (float, 13 / 3),
         "kappa_gw": (float, None),
         "delta_gw": (float, None),
@@ -489,6 +489,7 @@ class InjectionParams(ParamsBase):
         if self.pta_model == 'turnover':
             kwargs['kappa'] = self.kappa_gw
             kwargs['lf0_gw'] = self.log10_fbend_gw
+
         kwargs['simulate'] = True
         pta = model_registry[self.pta_model].func(psrs, **kwargs
                                              )
@@ -506,7 +507,12 @@ class InjectionParams(ParamsBase):
         if self.gamma_gw is not None:
             logger.info("gw_gamma from chain overridden by user.")
             params_draw['gw_gamma'] = self.gamma_gw
-
+        if self.log10_A_mono is not None:
+            params_draw['mono_log10_A'] = self.log10_A_mono
+        if self.log10_A_mono is not None:
+            params_draw['mono_gamma'] = self.gamma_mono
+        params_draw['gw_kappa'] = self.kappa_gw
+        params_draw['gw_log10_fbend'] = self.log10_fbend_gw
         residuals = simulate(pta, params_draw)
         print(residuals[0][:10])
         logger.info("Setting residuals...")

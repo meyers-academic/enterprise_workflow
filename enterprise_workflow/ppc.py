@@ -6,8 +6,9 @@ import cloudpickle
 from tqdm import tqdm
 from loguru import logger
 
+from enterprise_extensions.frequentist import optimal_statistic
 class SingleGPDraw(object):
-    def __init__(self,  os_obj, type='Hypermodel'):
+    def __init__(self,  os_obj, type='Hypermodel', os_traditional=None):
 
         self.type = type
 
@@ -24,6 +25,10 @@ class SingleGPDraw(object):
 
         self.rhos_freqs = os_obj.rhos_freqs
         self.sigmas_freqs = os_obj.sigmas_freqs
+
+        ahat, sigma_tmp = os_obj.mcos()
+        self.mcos = ahat
+        self.mcos_error = sigma_tmp
 
 
 class RecoveryObject(object):
