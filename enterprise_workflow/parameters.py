@@ -145,7 +145,7 @@ class OptStatParams(ParamsBase):
                 msg = "{0} is not a valid parameter for config type {1}"
                 raise ValueError(msg.format(key, "main_run"))
 
-    def run_otstat(self):
+    def run_ostat(self):
         psrs = pickle.load(open(self.pulsar_pickle, 'rb'))
         noisedict = json.load(open(self.noise_dictionary, 'r'))
 
@@ -170,8 +170,11 @@ class OptStatParams(ParamsBase):
                                                  gamma_common=self.gamma_gw,
                                                  )
         chain_df = pd.read_feather(self.chain_feather)
-        chain = np.hstack((chain_df.to_numpy(), np.zeros((len(chain_df), 4))))
         param_names = chain_df.columns
+        # chain = np.hstack((chain_df.to_numpy(), np.zeros((len(chain_df), 4))))
+        chain = chain_df.to_numpy()
+        # print(chain.shape)
+        # print(param_names.size)
         results = {}
         os = OptimalStatistic(psrs, pta=pta, bayesephem=False)
         if self.scos:
