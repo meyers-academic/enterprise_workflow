@@ -4,6 +4,7 @@ import numpy as np
 import scipy.linalg
 from enterprise.signals import utils
 import math
+from tqdm import tqdm
 
 def latex_float(f):
     float_str = "{0:.2g}".format(f)
@@ -47,17 +48,15 @@ class Cmat:
         FNr = self.Nmat.solve(r, self.Fmat)
         FNl = FNr if (l is r) else self.Nmat.solve(l, self.Fmat)
 
-        return self.Nmat.solve(l, r) - np.dot(FNl.T, scipy.linalg.cho_solve(self.Sigma, FNr))
+        return self.Nmat.solve(l, r) - np.dot(FNl.T, scipy.linalg.cho_solve(self.Sigma, FNr)).T
 
 class OS:
     def __init__(self, psrs, pta, params, residuals=None):
         self.psrs, self.params = psrs, params
         self.pairs  = [(i,j) for i in range(len(pta)) for j in range(i+1, len(pta))]
         self.angles = np.array([np.arccos(np.dot(self.psrs[i].pos, self.psrs[j].pos)) for (i,j) in self.pairs])
-        if residuals is not None:
-            print(residuals[0])
+
         ys = [sm._residuals for sm in pta] if residuals is None else residuals
-        print(ys[0])
         self.Cs = [Cmat(sm, params) for sm in pta]
 
         self.Fgws  = [sm['gw'].get_basis(params) for sm in pta]
@@ -119,21 +118,19 @@ class OS:
             self.rhos_freqs[ii] = np.array(ts_tmp) / np.array(bs_tmp)
             self.sigmas_freqs[ii] = 1.0 / np.sqrt(bs_tmp)
 
-    def mcos(self, orfs=[utils.monopole_orf, utils.dipole_orf, utils.hd_orf]):
-        design = np.array([[orfs[kk](self.psrs[i].pos, self.psrs[j].pos) for (i,j) in self.pairs]
-                           for kk in range(len(orfs))]).T # Npairs x 3 matrix
-        errors = np.diag(self.sigmas**2)
-        sigma_inv_matrix = np.linalg.inv(design.T @ np.linalg.inv(errors) @ design)
-        ahat = sigma_inv_matrix @ design.T @ np.linalg.inv(errors) @ self.rhos
+    def setup_mcos(self, orfs):
+        if not hasattr(self, "_mcos_ready") or not self._mcos_ready:
+            self.design = np.array([[orfs[kk](self.psrs[i].pos, self.psrs[j].pos) for (i,j) in self.pairs]
+                           for kk in range(len(orfs))]).T
+            self.sigma_inv_matrix = np.linalg.inv(self.design.T @ np.linalg.inv(np.diag(self.sigmas**2)) @ self.design)
+            self.prefac_matrix = self.sigma_inv_matrix @ self.design.T @ np.diag(self.sigmas**-2)
+            self._mcos_ready = True
 
-        # design = np.array([[orfs[kk](self.psrs[i].pos, self.psrs[j].pos) for (i, j) in self.pairs]
-        #                    for kk in range(len(orfs))]).T  # Npairs x 3 matrix
-        # x, res, _, _ = np.linalg.lstsq(design / self.sigmas[:, np.newaxis],
-        #                                self.rhos / self.sigmas, rcond=None)
-        #
-        # errmat = np.linalg.inv(
-        #     (design / self.sigmas[:, np.newaxis]).T @ (design / self.sigmas[:, np.newaxis]))
-        return ahat, np.sqrt(np.diag(sigma_inv_matrix))
+
+    def mcos(self, orfs=[utils.monopole_orf, utils.dipole_orf, utils.hd_orf]):
+        self.setup_mcos(orfs)
+        ahat = self.prefac_matrix @ self.rhos
+        return ahat, np.sqrt(np.diag(self.sigma_inv_matrix))
 
 
 
@@ -183,46 +180,45 @@ class OS:
         return np.trace(ret)
 
     def gw_corr(self, orf=utils.hd_orf):
-        Agw = 10**self.params['gw_log10_A']
-        self.orfs = np.array([orf(self.psrs[i].pos, self.psrs[j].pos) for (i,j) in self.pairs])
+        Agw = 10 ** self.params['gw_log10_A']
 
         sigma = np.zeros((len(self.pairs), len(self.pairs)), 'd')
 
-        for ij in range(len(self.pairs)):
+        for ij in tqdm(range(len(self.pairs))):
             i, j = self.pairs[ij]
 
             for kl in range(ij, len(self.pairs)):
                 k, l = self.pairs[kl]
 
                 if ij == kl:
-                    sigma[ij, kl] = (self._tracedot(orf, i, (i,j), j, (j,i)) +
-                                     Agw**4 * self._tracedot(orf, i, (i,j), j, (j,i), i, (i,j), j, (j,i)))
-
-                    # ijij -> ij ij + ii jj + ij ji
-                    # iCGCj iCGCj -> A^4 (CGCG)^2 + iCGCj jCGCi + A^4 iCGCj iCGCj
+                    sigma[ij, kl] = (self._tracedot(orf, i, (i, j), j, (j, i)) +
+                                     Agw ** 4 * self._tracedot(orf, i, (i, j), j, (j, i), i, (i, j), j, (j, i)))
 
                 elif i == k and j != l:
-                    sigma[ij, kl] = (Agw**2 * self._tracedot(orf, i, (i,j), j, (j,l), l, (l,i)) +
-                                     Agw**4 * self._tracedot(orf, i, (i,j), j, (j,i), i, (i,l), l, (l,i)))
+                    sigma[ij, kl] = (Agw ** 2 * self._tracedot(orf, i, (i, j), j, (j, l), l, (l, i)) +
+                                     Agw ** 4 * self._tracedot(orf, i, (i, j), j, (j, i), i, (i, l), l, (l, i)))
 
                     # ijil -> ij il + ii jl + il ji
                     # iCGCj iCGCl -> A^4 (CGCG)^2 + A^2 iCGCj lCGCi + A^4 iCGCj iCGCl
 
                 elif i != k and j == l:
-                    sigma[ij, kl] = (Agw**2 * self._tracedot(orf, j, (j,k), k, (k,i), i, (i,j)) +
-                                     Agw**4 * self._tracedot(orf, i, (i,j), j, (j,k), k, (k,j), j, (j,i)))
+                    sigma[ij, kl] = (Agw ** 2 * self._tracedot(orf, j, (j, k), k, (k, i), i, (i, j)) +
+                                     Agw ** 4 * self._tracedot(orf, i, (i, j), j, (j, k), k, (k, j), j, (j, i)))
 
                     # ijkj -> ij kj + ik jj + ij jk
                     # iCGCj kCGCj -> A^4 (CGCG)^2 + A^2 jCGCk iCGCj + A^4 iCGCj kCGCj
 
                 elif i != k and j != l and i != l and j != k:
-                    sigma[ij, kl] = Agw**4 * (self._tracedot(orf, i, (i,j), j, (j,k), k, (k,l), l, (l,i)) +
-                                              self._tracedot(orf, i, (i,j), j, (j,l), l, (l,k), k, (k,i)))
+                    sigma[ij, kl] = Agw ** 4 * (self._tracedot(orf, i, (i, j), j, (j, k), k, (k, l), l, (l, i)) +
+                                                self._tracedot(orf, i, (i, j), j, (j, l), l, (l, k), k, (k, i)))
 
                     # ijkl -> ij kl + ik jl + il jk
                     # iCGCj kCGCl -> A^4 (CGCG)^2 + A^4 iCGCj lCGCk + A^4 iCGCj kCGCl
 
-                sigma[ij, kl] = sigma[ij, kl] * self.sigmas[ij]**2 * self.sigmas[kl]**2
+                sigma[ij, kl] = sigma[ij, kl] * self.sigmas[ij] ** 2 * self.sigmas[kl] ** 2 / orf(self.psrs[i].pos,
+                                                                                                  self.psrs[
+                                                                                                      j].pos) ** 2 / orf(
+                    self.psrs[k].pos, self.psrs[l].pos) ** 2
                 sigma[kl, ij] = sigma[ij, kl]
 
         return sigma
@@ -248,6 +244,7 @@ class OSShifts(OS):
         assert self.Gamma.ndim == 1
 
         FCys = [make_complex(C.solve(y, Fgw)) for C, y, Fgw in zip(Cs, ys, Fgws)]
+        print(FCys[0])
         self.FCFs = [C.solve(Fgw, Fgw) for C, Fgw in zip(Cs, Fgws)]
 
         ts = [np.conj(FCys[i]) * (self.Gamma[::2] * FCys[j]) for (i, j) in self.pairs]

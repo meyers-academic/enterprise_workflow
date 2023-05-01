@@ -137,7 +137,8 @@ def model3a_sinusoid(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_
     pta.set_default_params(noisedict)
     return pta
 
-def model_3d(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=False, simulate=False):
+def model_3d(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None,
+             tm_marg=False, simulate=False):
     Tspan = model_utils.get_tspan(psrs)
     if simulate:
         tm = simulate_package.TimingModel()
@@ -165,7 +166,8 @@ def model_3d(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=Fal
     pta.set_default_params(noisedict)
     return pta
 
-def model_2a_or_3a_no_combine(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=True, type='model_2a', simulate=False):
+def model_2a_or_3a_no_combine(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=None, tm_marg=True, type='model_2a', simulate=False,
+                              inc_ecorr=True):
 
     # 15-yr dataset
     Tspan = model_utils.get_tspan(psrs)
@@ -186,7 +188,7 @@ def model_2a_or_3a_no_combine(psrs, noisedict=None, n_gwbfreqs=14, gamma_common=
         tm = simulate_package.TimingModel()
     else:
         tm = gp_signals.TimingModel(use_svd=True)
-    wn = ee_models.white_noise_block(vary=False, inc_ecorr=True, tnequad=False, select='backend')
+    wn = ee_models.white_noise_block(vary=False, inc_ecorr=inc_ecorr, tnequad=False, select='backend', gp_ecorr=True)
     rn = ee_models.red_noise_block(prior='log-uniform', Tspan=Tspan, components=30, combine=False)
     crn = ee_models.common_red_noise_block(psd='powerlaw', prior='log-uniform', Tspan=Tspan,
                                         components=n_gwbfreqs, gamma_val=gamma_common,

@@ -9,12 +9,13 @@ import numpy as np
 from .extra_models import model_registry
 from enterprise_workflow import ppc
 import time
+from tqdm import tqdm
 import re
 
 from loguru import logger
 from enterprise_extensions import sampler, models
 from enterprise.signals import parameter
-
+from enterprise_workflow.optimal_statistic import OS
 from enterprise_extensions.frequentist.optimal_statistic import OptimalStatistic
 
 class ParamsBase(dict):
@@ -34,7 +35,8 @@ class Params(ParamsBase):
         "main_run",
         "reweighting",
         "ostat",
-        "ppc"
+        "ppc",
+        "ostat_simulations"
     ]
 
     def __init__(self, *args, **kwargs):
@@ -57,6 +59,8 @@ class Params(ParamsBase):
         #     params.reweighting = ReweightingParams(**config["reweighting"])
         if "ostat" in config:
             params.ostat = OptStatParams(**config["ostat"])
+        if "ostat_simulations" in config:
+            params.ostat_simulations = OptStatSimulationParams(**config["ostat_simulations"])
         if "ppc" in config:
             params.ppc = PPCParams(**config["ppc"])
         return params
@@ -173,8 +177,6 @@ class OptStatParams(ParamsBase):
         param_names = chain_df.columns
         # chain = np.hstack((chain_df.to_numpy(), np.zeros((len(chain_df), 4))))
         chain = chain_df.to_numpy()
-        # print(chain.shape)
-        # print(param_names.size)
         results = {}
         os = OptimalStatistic(psrs, pta=pta, bayesephem=False)
         if self.scos:
@@ -485,18 +487,19 @@ class InjectionParams(ParamsBase):
             elif 'log10_ecorr' in par and 'basis_ecorr' not in par:
                 ecorr = par.split('_')[0] + '_basis_ecorr_' + '_'.join(par.split('_')[1:])
                 noisedict[ecorr] = noisedict[par]
+        if not hasattr(self, 'pta'):
+            kwargs = {'noisedict': noisedict,
+                      'n_gwbfreqs': self.gw_components,
+                      'gamma_common': self.gamma_gw}
+            if self.pta_model == 'turnover':
+                kwargs['kappa'] = self.kappa_gw
+                kwargs['lf0_gw'] = self.log10_fbend_gw
+            if 'nocombine' in self.pta_model:
+                kwargs['inc_ecorr'] = self.inc_ecorr
 
-        kwargs = {'noisedict': noisedict,
-                  'n_gwbfreqs': self.gw_components,
-                  'gamma_common': self.gamma_gw}
-        if self.pta_model == 'turnover':
-            kwargs['kappa'] = self.kappa_gw
-            kwargs['lf0_gw'] = self.log10_fbend_gw
-
-        kwargs['simulate'] = True
-        pta = model_registry[self.pta_model].func(psrs, **kwargs
-                                             )
-
+            kwargs['simulate'] = True
+            self.pta = model_registry[self.pta_model].func(psrs, **kwargs
+                                                 )
         if params_draw is None and self.simulation_chain_feather is not None:
             logger.info(f"User specified draw from chain instead of supplying parameters")
             logger.info(f"loading chain from: {self.simulation_chain_feather}")
@@ -516,8 +519,7 @@ class InjectionParams(ParamsBase):
             params_draw['mono_gamma'] = self.gamma_mono
         params_draw['gw_kappa'] = self.kappa_gw
         params_draw['gw_log10_fbend'] = self.log10_fbend_gw
-        residuals = simulate(pta, params_draw)
-        print(residuals[0][:10])
+        residuals = simulate(self.pta, params_draw)
         logger.info("Setting residuals...")
         for psr, r in zip(psrs, residuals):
             set_residuals(psr, r)
@@ -526,3 +528,142 @@ class InjectionParams(ParamsBase):
         logger.info(f"Saving simulation results in: {outdir}")
         pickle.dump(psrs, open(str(outdir.joinpath("simulated_psrs.pkl")), 'wb'))
         json.dump(params_draw, open(str(outdir.joinpath("simulation_parameters.json")), 'w'))
+
+
+
+class OptStatSimulationParams(ParamsBase):
+    valid_params = {
+        "pulsar_pickle": (str, None),
+        "noise_dictionary": (str, None),
+        "chain_feather": (str, None),
+        "output_directory": (str, None),
+        "pta_model": (str, 'model_2a'),
+        "gamma_gw": (float, None),
+        'gw_components': (int, 14),
+        "human": (str, 'picard'),
+        "mcos": (bool, True),
+        "scos": (bool, False),
+        "num_simulations": (int, 2000),
+        "sim_model": (str, 'model_2a')
+    }
+
+    def __init__(self, *args, **kwargs):
+        super(OptStatSimulationParams, self).__init__(*args, **kwargs)
+        # fill in defaults
+        for key, tup in OptStatSimulationParams.valid_params.items():
+            if key in self:
+                continue
+            else:
+                if tup[0] is bool and isinstance(tup[1], str):
+                    if tup[1].lower() == 'true':
+                        self[key] = True
+                    elif tup[0].lower() == 'false':
+                        self[key] = False
+                    else:
+                        raise ValueError("bool type param must be 'true' or 'false'")
+                else:
+                    self[key] = tup[1]
+        self.check_params()
+        self._pta = None
+
+        # used so that we can keep track of whether
+        # to use externally defined pta object
+        # or one supplied in config
+        self._pta_defined_externally = False
+
+    @property
+    def pta(self):
+        return self._pta
+
+    @pta.setter
+    def pta(self, new):
+        self._pta = new
+        self._pta_defined_externally = True
+
+    def check_params(self):
+        for key, val in self.items():
+            # pass over search type key
+            # check params
+            if key in OptStatSimulationParams.valid_params:
+                if val is not None:
+                    if OptStatSimulationParams.valid_params[key][0] == bool and isinstance(val, str):
+                        if val.lower() == "true":
+                            self[key] = True
+                        elif val.lower() == "false":
+                            self[key] = False
+                    else:
+                        self[key] = OptStatSimulationParams.valid_params[key][0](val)
+            else:
+                msg = "{0} is not a valid parameter for config type {1}"
+                raise ValueError(msg.format(key, "main_run"))
+
+    def run_ostat_simulations(self):
+        psrs = pickle.load(open(self.pulsar_pickle, 'rb'))
+        noisedict = json.load(open(self.noise_dictionary, 'r'))
+
+        for par in list(noisedict.keys()):
+            if 'log10_equad' in par:
+
+                efac = re.sub('log10_equad', 'efac', par)
+                equad = re.sub('log10_equad', 'log10_t2equad', par)
+
+                noisedict[equad] = np.log10(10 ** noisedict[par] / noisedict[efac])
+            elif 'log10_ecorr' in par and 'basis_ecorr' not in par:
+                ecorr = par.split('_')[0] + '_basis_ecorr_' + '_'.join(par.split('_')[1:])
+                noisedict[ecorr] = noisedict[par]
+        if self.pta is not None:
+            pta = self.pta
+        else:
+            pta = model_registry[self.pta_model].func(psrs, noisedict=noisedict,
+                                                      n_gwbfreqs=self.gw_components,
+                                                      gamma_common=self.gamma_gw,
+                                                      )
+        os_real = OptimalStatistic(psrs, pta=pta, bayesephem=False)
+        results = {}
+        results['fake'] = {}
+        results['real'] = {}
+        results['fake']['os_value'] = []
+        results['real']['os_value'] = []
+
+        results['fake']['os_error'] = []
+        results['real']['os_error'] = []
+        sim_params = {'simulation_chain_feather': self.chain_feather,
+                      'output_directory': './tmp',
+                      'pulsar_pickle': self.pulsar_pickle,
+                      'noise_dictionary': self.noise_dictionary,
+                      'inc_ecorr': True,
+                      'gw_components': 14,
+                      'pta_model': self.sim_model,
+                      'simulation_name': f'test',
+                      'log10_A_gw': None,
+                      'gamma_gw': None,
+                      'log10_A_mono': None
+                      }
+        tmp_outdir = Path('tmp').joinpath(f"simulation_test")
+        tmp_outdir.mkdir(exist_ok=True, parents=True)
+        inj_params = InjectionParams(**sim_params)
+        chain = pd.read_feather(self.chain_feather)
+        # ML parameters
+        pars = chain.iloc[45650].to_dict()
+        outdir_final = Path(self.output_directory).joinpath("os_simulations")
+        outdir_final.mkdir(exist_ok=True, parents=True)
+        os_fake = OS(psrs, pta, pars)
+        for ii in tqdm(range(self.num_simulations)):
+            # rand_idx = np.random.randint(0, len(chain))
+            inj_params.simulate(pars)
+
+            psrs_fake = pickle.load(open(tmp_outdir.joinpath("simulated_psrs.pkl"), 'rb'))
+            sim_params = json.load(open(tmp_outdir.joinpath("simulation_parameters.json"), 'r'))
+            os_fake.set_residuals([psrs_fake[ii].residuals for ii in range(len(psrs_fake))])
+            results['fake']['os_value'].append(os_fake.os())
+            results['fake']['os_error'].append(os_fake.os_sigma())
+            _, _, _, os_val_real, os_err_val_real = os_real.compute_os(sim_params)
+            results['real']['os_value'].append(os_val_real)
+            results['real']['os_error'].append(os_err_val_real)
+
+            if ii % 10 == 0:
+                json.dump(results, open(str(outdir_final.joinpath("sim_results.json")), 'w'))
+
+
+
+
